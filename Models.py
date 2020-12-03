@@ -59,8 +59,8 @@ def xy_outputs(out, scaling, scale=80):
     return x_dots, y_dots
 
 
-def get_2d_gaussian(key_x, key_y, std, scale=80):
-    hw = int(scale / 8)
+def get_2d_gaussian(key_x, key_y, std, scale=64, step=1):
+    hw = int(scale / 8) * step
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     g_yx_set = torch.ones(len(key_x), len(key_x[0]), hw, hw).to(device)
 
@@ -217,46 +217,52 @@ class UNet_Reconstruct(nn.Module):
     def __init__(self, n_class, num_keypoints):
         super().__init__()
 
-        self.dconv_down1 = double_conv_r(3, 64 // 4)
-        self.dconv_down2 = double_conv_r(64 // 4, 128 // 4)
-        self.dconv_down3 = double_conv_r(128 // 4, 256 // 4)
-        self.dconv_down4 = double_conv_r(256 // 4, 512 // 4)
+        self.dconv_down1 = double_conv(3, 64)
+        self.dconv_down2 = double_conv(64, 128)
+        self.dconv_down3 = double_conv(128, 256)
+        self.dconv_down4 = double_conv(256, 512)        
 
         self.maxpool = nn.MaxPool2d(2)
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-
-        self.dconv_up3 = double_conv_r((256 + 512) // 4 + num_keypoints, 256 // 4)
-        self.dconv_up2 = double_conv_r((128 + 256) // 4, 128 // 4)
-        self.dconv_up1 = double_conv_r((64 + 128) // 4, 64 // 4)
-
-        self.conv_last = nn.Conv2d(64 // 4, n_class, 1)
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)        
+        
+        self.dconv_up3 = double_conv(256 + 512 + num_keypoints, 256)
+        self.dconv_up2 = double_conv(128 + 256 + num_keypoints, 128)
+        self.dconv_up1 = double_conv(64 + 128 + num_keypoints, 64)
+        
+        self.conv_last = nn.Conv2d(64 + num_keypoints, n_class, 1)
 
     def forward(self, source, maps):
         x = source
-        y = maps
 
         conv1 = self.dconv_down1(x)
         x = self.maxpool(conv1)
+        
         conv2 = self.dconv_down2(x)
         x = self.maxpool(conv2)
         conv3 = self.dconv_down3(x)
-        x = self.maxpool(conv3)
+        x = self.maxpool(conv3) 
         x = self.dconv_down4(x)
 
-        x = torch.cat([x, y], dim=1)
-
-        x = self.upsample(x)
+        y = get_2d_gaussian(result_x, result_y, std=0.1, step=1)
+        x = torch.cat([x,y], dim=1)
+        x = self.upsample(x)        
         x = torch.cat([x, conv3], dim=1)
-
         x = self.dconv_up3(x)
-        x = self.upsample(x)
-        x = torch.cat([x, conv2], dim=1)
+        x = self.upsample(x)    
 
+        x = torch.cat([x, conv2], dim=1)       
+        y = get_2d_gaussian(result_x, result_y, std=0.1, step=4)
+        x = torch.cat([x,y], dim=1)
         x = self.dconv_up2(x)
-        x = self.upsample(x)
-        x = torch.cat([x, conv1], dim=1)
-        x = self.dconv_up1(x)
+        x = self.upsample(x)        
+        x = torch.cat([x, conv1], dim=1)  
 
+        y = get_2d_gaussian(result_x, result_y, std=0.1, step=8)
+        x = torch.cat([x,y], dim=1) 
+        x = self.dconv_up1(x)
+        
+        y = get_2d_gaussian(result_x, result_y, std=0.1, step=8)
+        x = torch.cat([x,y], dim=1)
         out = self.conv_last(x)
         out = torch.tanh(out)
 
@@ -304,26 +310,28 @@ def train_keypoints(keypoint_model, reconstruct_model, dataloader, lr=1e-3, wd=5
                     writer.add_scalar('Loss/train', loss, epoch)
 
                     if (epoch % 10 == 0):
-                        writer.add_image('Image/' + str(epoch) + '_1_source', source[0], epoch)
-                        writer.add_image('Image/' + str(epoch) + '_2_target', target[0], epoch)
-                        writer.add_image('Image/' + str(epoch) + '_3_reconstruct', reconstruct[0], epoch)
+                        img = channels_to_frame(source[0].cpu().detach().numpy())
+                        x_cord = result_x_unscaled[0].cpu().detach().numpy()
+                        y_cord = result_y_unscaled[0].cpu().detach().numpy()
 
-                        fig = Figure(figsize=(4, 4), dpi=20)
-                        canvas = FigureCanvasAgg(fig)
-                        ax = fig.add_subplot(111)
-                        ax.imshow(channels_to_frame(source[0].cpu().detach().numpy()))
-                        ax.scatter(result_x_unscaled[0].cpu().detach().numpy(),
-                                   result_y_unscaled[0].cpu().detach().numpy(), c='r', s=40)
-                        canvas.draw()
-                        buf = canvas.buffer_rgba()
-                        # convert to a NumPy array
-                        X = np.asarray(buf)
-                        X = rgba_to_rgb(X)
+                        for i in range(len(x_cord)):
+                            x = int(x_cord[i])
+                            y = int(y_cord[i])
+                            img[x-1:x+1,y-1:y+1] = [255,0,0]
 
-                        writer.add_image('Image/' + str(epoch) + '_4_keypoints', X, epoch)
+                        img = frame_to_channels(img)
+
+                        img_batch = np.zeros((4, 3, scale, scale))
+                        img_batch[0] = source[0].cpu().detach().numpy()
+                        img_batch[1] = target[0].cpu().detach().numpy()
+                        img_batch[2] = reconstruct[0].cpu().detach().numpy()
+                        img_batch[3] = img
+
+                        writer.add_images('Image/' + str(epoch), img_batch, epoch)
 
                 # don't update weights and rates when in 'val' phase
                 if training:
+                    target_outputs.register_hook(lambda x: print(x))
                     loss.backward()
                     optimizer.step()
                 running_loss += loss.item()

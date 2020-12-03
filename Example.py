@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from skimage.transform import resize
 import torch
-from Models import xy_outputs, get_2d_gaussian, train_keypoints, UNet, UNet_Reconstruct
+from Models import xy_outputs, train_keypoints, UNet, UNet_Reconstruct
 from TrainDataset import frame_to_channels, channels_to_frame, TrainDataset
 import pickle
 
@@ -15,7 +15,7 @@ def test_keypoints(keypoint_model, img):
     fig, ax1 = plt.subplots(1, 1, figsize=(15, 15))
 
     im = np.array(img)
-    im = resize(im, (80, 80), anti_aliasing=True)
+    im = resize(im, (64, 64), anti_aliasing=True)
     ax1.imshow(im)
 
     img_arr = np.swapaxes(im, 2, 0)
@@ -44,8 +44,7 @@ def test_reconstruct(keypoint_model, reconstruct_model, img_source, img_target, 
 
   example_output = keypoint_model(example_target)
   example_keypoints_x, example_keypoints_y = xy_outputs(example_output, scaling=True)
-  example_gauss = get_2d_gaussian(example_keypoints_x, example_keypoints_y, std=0.1)
-  reconstruct_example = reconstruct_model(example_source, example_gauss)
+  reconstruct_example = reconstruct_model(example_source, example_keypoints_x, example_keypoints_y)
   reconstruct_example = reconstruct_example.cpu().detach().numpy()[0]
   reconstruct_example = channels_to_frame(reconstruct_example)
   fig, (ax1,ax2,ax3) = plt.subplots(1,3,figsize=(15,15))

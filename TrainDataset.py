@@ -47,8 +47,8 @@ class TrainDataset(Dataset):
                 rand = random.randint(0, dataset_size - 1)
                 if (rand == i):
                     rand = (rand + 1) % dataset_size
-                source = frame_to_channels(self.data[i], scale=80)
-                target = frame_to_channels(self.data[rand], scale=80)
+                source = frame_to_channels(self.data[i], scale=64)
+                target = frame_to_channels(self.data[rand], scale=64)
                 source_list.append(source)
                 target_list.append(target)
 
