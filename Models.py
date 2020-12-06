@@ -16,34 +16,33 @@ from TrainDataset import channels_to_frame, frame_to_channels
 
 
 def loss_alex(list1, list2, loss_fn_alex):
-  loss = 0
-  for i in range(0, len(list1)):
-    loss += loss_fn_alex(list1[i], list2[i])
-  loss /= len(list1)
+    loss = 0
+    for i in range(0, len(list1)):
+        loss += loss_fn_alex(list1[i], list2[i])
+    loss /= len(list1)
 
-  return loss
+    return loss
+
 
 def rgba_to_rgb(rgba):
-  rgb = np.zeros((rgba.shape[0], rgba.shape[1], 3), dtype='float32')
-  r, g, b, a = rgba[:,:,0], rgba[:,:,1], rgba[:,:,2], rgba[:,:,3]
-  rgb[:,:,0] = r * a
-  rgb[:,:,1] = g * a
-  rgb[:,:,2] = b * a
+    rgb = np.zeros((rgba.shape[0], rgba.shape[1], 3), dtype='float32')
+    r, g, b, a = rgba[:, :, 0], rgba[:, :, 1], rgba[:, :, 2], rgba[:, :, 3]
+    rgb[:, :, 0] = r * a
+    rgb[:, :, 1] = g * a
+    rgb[:, :, 2] = b * a
 
-  rgb = np.swapaxes(rgb, 2, 0)
-  rgb = np.swapaxes(rgb, 1, 2)
+    rgb = np.swapaxes(rgb, 2, 0)
+    rgb = np.swapaxes(rgb, 1, 2)
 
-  return rgb
+    return rgb
+
 
 def xy_outputs(out, scaling, scale=80):
     softmax_out = softmax(out.reshape(out.shape[0], out.shape[1], -1), dim=-1)
     softmax_out = softmax_out.reshape(*out.shape)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    x = torch.arange(scale)
-    y = torch.arange(scale)
+    x = torch.arange(scale, device=out.device)
+    y = torch.arange(scale, device=out.device)
     grid_x, grid_y = torch.meshgrid(x, y)
-    grid_x = grid_x.to(device)
-    grid_y = grid_y.to(device)
     grid_x = grid_x[None, None]
     grid_y = grid_y[None, None]
     prob_x = (grid_x * softmax_out)
@@ -90,9 +89,11 @@ def get_2d_gaussian(key_x, key_y, std, scale=64, step=1):
 def double_conv(in_channels, out_channels):
     return nn.Sequential(
         nn.Conv2d(in_channels, out_channels, 3, padding=1),
-        nn.ReLU(inplace=True),
+        nn.BatchNorm2d(out_channels),
+        nn.LeakyReLU(inplace=True),
         nn.Conv2d(out_channels, out_channels, 3, padding=1),
-        nn.ReLU(inplace=True)
+        nn.BatchNorm2d(out_channels),
+        nn.LeakyReLU(inplace=True)
     )
 
 
@@ -144,132 +145,66 @@ class UNet(nn.Module):
 
         return out
 
-    def double_conv_r(in_channels, out_channels):
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, 3, padding=1),
-            nn.ReLU(inplace=True)
-        )
-
-    class UNet_Reconstruct(nn.Module):
-
-        def __init__(self, n_class, num_keypoints):
-            super().__init__()
-
-            self.dconv_down1 = double_conv_r(3, 64 // 4)
-            self.dconv_down2 = double_conv_r(64 // 4, 128 // 4)
-            self.dconv_down3 = double_conv_r(128 // 4, 256 // 4)
-            self.dconv_down4 = double_conv_r(256 // 4, 512 // 4)
-
-            self.maxpool = nn.MaxPool2d(2)
-            self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-
-            self.dconv_up3 = double_conv_r((256 + 512) // 4 + num_keypoints, 256 // 4)
-            self.dconv_up2 = double_conv_r((128 + 256) // 4, 128 // 4)
-            self.dconv_up1 = double_conv_r((64 + 128) // 4, 64 // 4)
-
-            self.conv_last = nn.Conv2d(64 // 4, n_class, 1)
-
-        def forward(self, source, maps):
-            x = source
-            y = maps
-
-            conv1 = self.dconv_down1(x)
-            x = self.maxpool(conv1)
-            conv2 = self.dconv_down2(x)
-            x = self.maxpool(conv2)
-            conv3 = self.dconv_down3(x)
-            x = self.maxpool(conv3)
-            x = self.dconv_down4(x)
-
-            x = torch.cat([x, y], dim=1)
-
-            x = self.upsample(x)
-            x = torch.cat([x, conv3], dim=1)
-
-            x = self.dconv_up3(x)
-            x = self.upsample(x)
-            x = torch.cat([x, conv2], dim=1)
-
-            x = self.dconv_up2(x)
-            x = self.upsample(x)
-            x = torch.cat([x, conv1], dim=1)
-            x = self.dconv_up1(x)
-
-            out = self.conv_last(x)
-            out = torch.tanh(out)
-
-            return out
-
-
-def double_conv_r(in_channels, out_channels):
-    return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, 3, padding=1),
-        nn.ReLU(inplace=True),
-        nn.Conv2d(out_channels, out_channels, 3, padding=1),
-        nn.ReLU(inplace=True)
-    )
-
 
 class UNet_Reconstruct(nn.Module):
 
     def __init__(self, n_class, num_keypoints):
         super().__init__()
 
-        self.dconv_down1 = double_conv(3, 64)
-        self.dconv_down2 = double_conv(64, 128)
-        self.dconv_down3 = double_conv(128, 256)
-        self.dconv_down4 = double_conv(256, 512)        
+        chans = 8
+        self.dconv_down1 = double_conv(3, chans)
+        self.dconv_down2 = double_conv(chans, 2 * chans)
+        self.dconv_down3 = double_conv(2 * chans, 4 * chans)
+        self.dconv_down4 = double_conv(4 * chans, 4 * chans)
 
         self.maxpool = nn.MaxPool2d(2)
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)        
-        
-        self.dconv_up3 = double_conv(256 + 512 + num_keypoints, 256)
-        self.dconv_up2 = double_conv(128 + 256 + num_keypoints, 128)
-        self.dconv_up1 = double_conv(64 + 128 + num_keypoints, 64)
-        
-        self.conv_last = nn.Conv2d(64 + num_keypoints, n_class, 1)
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
 
-    def forward(self, source, maps):
+        self.dconv_up3 = double_conv(4 * chans + 2 * num_keypoints, 4 * chans)
+        self.dconv_up2 = double_conv(+ 4 * chans + 2 * num_keypoints, 2 * chans)
+        self.dconv_up1 = double_conv(2 * chans + 2 * num_keypoints, 2 * chans)
+
+        self.conv_last = nn.Conv2d(2 * chans + 2 * num_keypoints, 3, 1)
+
+    def forward(self, source, result_kps):
         x = source
 
         conv1 = self.dconv_down1(x)
         x = self.maxpool(conv1)
-        
+
         conv2 = self.dconv_down2(x)
         x = self.maxpool(conv2)
         conv3 = self.dconv_down3(x)
-        x = self.maxpool(conv3) 
+        x = self.maxpool(conv3)
         x = self.dconv_down4(x)
+        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
 
-        y = get_2d_gaussian(result_x, result_y, std=0.1, step=1)
-        x = torch.cat([x,y], dim=1)
-        x = self.upsample(x)        
-        x = torch.cat([x, conv3], dim=1)
+        x = torch.cat([x, y], dim=1)
+        x = self.upsample(x)
+
+        # x = torch.cat([x, conv3], dim=1)
         x = self.dconv_up3(x)
-        x = self.upsample(x)    
+        x = self.upsample(x)
 
-        x = torch.cat([x, conv2], dim=1)       
-        y = get_2d_gaussian(result_x, result_y, std=0.1, step=4)
-        x = torch.cat([x,y], dim=1)
+        # x = torch.cat([x, conv2], dim=1)
+        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+        x = torch.cat([x, y], dim=1)
         x = self.dconv_up2(x)
-        x = self.upsample(x)        
-        x = torch.cat([x, conv1], dim=1)  
-
-        y = get_2d_gaussian(result_x, result_y, std=0.1, step=8)
-        x = torch.cat([x,y], dim=1) 
+        x = self.upsample(x)
+        # x = torch.cat([x, conv1], dim=1)
+        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+        x = torch.cat([x, y], dim=1)
         x = self.dconv_up1(x)
-        
-        y = get_2d_gaussian(result_x, result_y, std=0.1, step=8)
-        x = torch.cat([x,y], dim=1)
+        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+        x = torch.cat([x, y], dim=1)
         out = self.conv_last(x)
         out = torch.tanh(out)
 
         return out
 
 
-def train_keypoints(keypoint_model, reconstruct_model, dataloader, lr=1e-3, wd=5 * 1e-4, n_epochs=1000, patience=10, std=0.1):
+def train_keypoints(keypoint_model, reconstruct_model, dataloader, lr=1e-3, wd=5 * 1e-4, n_epochs=1000, patience=10,
+                    std=0.1):
     best_loss = np.inf
     best_weights = None
     best_weights_r = None
@@ -317,7 +252,7 @@ def train_keypoints(keypoint_model, reconstruct_model, dataloader, lr=1e-3, wd=5
                         for i in range(len(x_cord)):
                             x = int(x_cord[i])
                             y = int(y_cord[i])
-                            img[x-1:x+1,y-1:y+1] = [255,0,0]
+                            img[x - 1:x + 1, y - 1:y + 1] = [255, 0, 0]
 
                         img = frame_to_channels(img)
 
