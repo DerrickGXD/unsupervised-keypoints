@@ -31,11 +31,13 @@ flags.DEFINE_integer('num_kps', 8, '')
 flags.DEFINE_integer('vis_every', 50, '')
 flags.DEFINE_integer('num_frames', 2, '')
 flags.DEFINE_integer('batch_size', 2, '')
+flags.DEFINE_integer('img_size', 128, '')
 flags.DEFINE_float('std', 0.1, '')
 flags.DEFINE_float('lr', 1e-3, '')
+flags.DEFINE_float('wd', 0, '')
 flags.DEFINE_string('exp_name', 'kp_tigers', 'tmp dir to extract dataset')
-flags.DEFINE_string('root_dir_yt', '/home/filippos/data/youtube_vis/pkls/', 'tmp dir to extract dataset')
-flags.DEFINE_string('root_dir', '/home/filippos/data/TigDog_new_wnrsfm/', 'tmp dir to extract dataset')
+flags.DEFINE_string('root_dir_yt', '/home/xindeik/data/youtube_vis/pkls/', 'tmp dir to extract dataset')
+flags.DEFINE_string('root_dir', '/home/xindeik/data/TigDog_new_wnrsfm_new/', 'tmp dir to extract dataset')
 flags.DEFINE_string('tmp_dir', 'saved_frames/', 'tmp dir to extract dataset')
 flags.DEFINE_string('category', 'tiger', 'tmp dir to extract dataset')
 flags.DEFINE_string('tb_log_dir', 'logs/', 'tmp dir to extract dataset')
@@ -60,7 +62,7 @@ def main(_):
     if opts.category in ['horse', 'tiger']:
         dataset = tf_final.TigDogDataset_Final(opts.root_dir, opts.category, transforms=None, normalize=False,
                                                max_length=None, remove_neck_kp=False, split='train',
-                                               img_size=256, mirror=False, scale=False, crop=False)
+                                               img_size=opts.img_size, mirror=False, scale=False, crop=False)
 
         collate_fn = tf_final.TigDog_collate
 
@@ -80,6 +82,8 @@ def main(_):
             for k in sample.keys():
                 if k in ['video', 'sfm_poses', 'landmarks', 'segmentations', 'bboxes']:
                     new_sample[k] = sample[k][i]
+                    if(k=='landmarks'):
+                      print(new_sample[k].shape)
             pkl.dump(new_sample, open(directory + str(save_counter) + '.pkl', 'wb'))
             sample_to_vid[save_counter] = i_sample
             if i_sample in samples_per_vid:
@@ -87,10 +91,10 @@ def main(_):
             else:
                 samples_per_vid[i_sample] = [save_counter]
             save_counter += 1
-        #     if i >= 5:  # 35:  # TODO:fix this
-        #         break
-        # if i_sample >= 3:  # TODO:fix this
-        #     break
+           # if i >= 5:  # 35:  # TODO:fix this
+               # break
+        #if i_sample >= 3:  # TODO:fix this
+           # break
 
     training_samples = save_counter
     print('Training samples (frames):', training_samples)
@@ -98,7 +102,7 @@ def main(_):
                                                  sample_to_vid=sample_to_vid,
                                                  samples_per_vid=samples_per_vid,
                                                  normalize=True, transforms=True,
-                                                 remove_neck_kp=True, split='train', img_size=256,
+                                                 remove_neck_kp=True, split='train', img_size=opts.img_size,
                                                  mirror=True, scale=True, crop=True, v2_crop=True, tight_bboxes=True)
     collate_fn = tigdog_mf.TigDog_collate
 
@@ -109,7 +113,7 @@ def main(_):
     keypoint_model = UNet(opts.num_kps).cuda()
     reconstruct_model = UNet_Reconstruct(3, opts.num_kps).cuda()
     loss_fn_alex = lpips.LPIPS(net='alex').cuda()
-    optimizer = optim.Adam(list(keypoint_model.parameters()) + list(reconstruct_model.parameters()), lr=opts.lr)
+    optimizer = optim.Adam(list(keypoint_model.parameters()) + list(reconstruct_model.parameters()), lr=opts.lr, weight_decay=opts.wd)
     std = opts.std
     n_iter = 0
     for epoch in range(opts.epochs):
@@ -121,7 +125,7 @@ def main(_):
             target = frame2
             source = frame1
             target_outputs = keypoint_model(target)
-            result_x, result_y = xy_outputs(target_outputs, scaling=True, scale=frame2.shape[-1])
+            result_x, result_y = xy_outputs(target_outputs, scaling=True, scale=16)
             result_kps = torch.cat([result_x, result_y], dim=1)
             result_kps_vis = torch.stack([result_x, result_y, torch.ones_like(result_y)], dim=-1)
             reconstruct = reconstruct_model(source, result_kps)
@@ -135,7 +139,7 @@ def main(_):
                 kp_img = torch.from_numpy(kp_img).permute(2, 0, 1)[None]
                 kp_img = kp_img.to(source.device)
                 grid = torch.cat([source[:1], target[:1], kp_img[:1], change_range(reconstruct[:1], to_01=True)], dim=3)[0]
-                writer.add_image('images', grid, n_iter)
+                writer.add_image('image on iter : ' + str(n_iter), grid, n_iter)
             avg_loss += loss.item()
             writer.add_scalar('Loss/train', loss, n_iter)
             n_iter += 1

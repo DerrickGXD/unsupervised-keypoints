@@ -58,7 +58,7 @@ def xy_outputs(out, scaling, scale=80):
     return x_dots, y_dots
 
 
-def get_2d_gaussian(key_x, key_y, std, scale=64, step=1):
+def get_2d_gaussian(key_x, key_y, std, scale=128, step=1):
     hw = int(scale / 8) * step
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     g_yx_set = torch.ones(len(key_x), len(key_x[0]), hw, hw).to(device)
@@ -86,9 +86,19 @@ def get_2d_gaussian(key_x, key_y, std, scale=64, step=1):
     return g_yx_set
 
 
-def double_conv(in_channels, out_channels):
+def double_conv(in_channels, out_channels, first_layer=False, downsampling=True):
+    k_size = 3
+    s_size = 2
+    p_size = 1
+    if(first_layer==True):
+        k_size = 7
+        s_size = 1
+        p_size = 3
+    if(downsampling==False):
+        s_size = 1
+
     return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, 3, padding=1),
+        nn.Conv2d(in_channels, out_channels, k_size, stride=s_size, padding=p_size),
         nn.BatchNorm2d(out_channels),
         nn.LeakyReLU(inplace=True),
         nn.Conv2d(out_channels, out_channels, 3, padding=1),
@@ -102,43 +112,25 @@ class UNet(nn.Module):
     def __init__(self, n_class):
         super().__init__()
 
-        self.dconv_down1 = double_conv(3, 64)
-        self.dconv_down2 = double_conv(64, 128)
-        self.dconv_down3 = double_conv(128, 256)
-        self.dconv_down4 = double_conv(256, 512)
+        self.dconv_down1 = double_conv(3, 32, first_layer=True)
+        self.dconv_down2 = double_conv(32, 64)
+        self.dconv_down3 = double_conv(64, 128)
+        self.dconv_down4 = double_conv(128, 256)
 
-        self.maxpool = nn.MaxPool2d(2)
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-
-        self.dconv_up3 = double_conv(256 + 512, 256)
-        self.dconv_up2 = double_conv(128 + 256, 128)
-        self.dconv_up1 = double_conv(64 + 128, 64)
-
-        self.conv_last = nn.Conv2d(64, n_class, 1)
+        self.conv_last = nn.Conv2d(256, n_class, 1)
 
     def forward(self, x):
         conv1 = self.dconv_down1(x)
-        x = self.maxpool(conv1)
+        x = conv1
 
         conv2 = self.dconv_down2(x)
-        x = self.maxpool(conv2)
+        x = conv2
 
         conv3 = self.dconv_down3(x)
-        x = self.maxpool(conv3)
+        x = conv3
 
-        x = self.dconv_down4(x)
-
-        x = self.upsample(x)
-        x = torch.cat([x, conv3], dim=1)
-        x = self.dconv_up3(x)
-        x = self.upsample(x)
-        x = torch.cat([x, conv2], dim=1)
-
-        x = self.dconv_up2(x)
-        x = self.upsample(x)
-        x = torch.cat([x, conv1], dim=1)
-
-        x = self.dconv_up1(x)
+        conv4 = self.dconv_down4(x)
+        x = conv4
 
         out = self.conv_last(x)
         out = torch.tanh(out)
@@ -151,52 +143,62 @@ class UNet_Reconstruct(nn.Module):
     def __init__(self, n_class, num_keypoints):
         super().__init__()
 
-        chans = 8
-        self.dconv_down1 = double_conv(3, chans)
-        self.dconv_down2 = double_conv(chans, 2 * chans)
-        self.dconv_down3 = double_conv(2 * chans, 4 * chans)
-        self.dconv_down4 = double_conv(4 * chans, 4 * chans)
+        factor = 1
+        self.dconv_down1 = double_conv(3, 32//factor, first_layer=True)
+        self.dconv_down2 = double_conv(32//factor, 64//factor)
+        self.dconv_down3 = double_conv(64//factor, 128//factor)
+        self.dconv_down4 = double_conv(128//factor, 256//factor)
 
-        self.maxpool = nn.MaxPool2d(2)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
 
-        self.dconv_up3 = double_conv(4 * chans + 2 * num_keypoints, 4 * chans)
-        self.dconv_up2 = double_conv(+ 4 * chans + 2 * num_keypoints, 2 * chans)
-        self.dconv_up1 = double_conv(2 * chans + 2 * num_keypoints, 2 * chans)
+        self.dconv_up4 = double_conv(256//factor + num_keypoints, 256//factor, downsampling=False)
+        self.dconv_up3 = double_conv(256//factor, 128//factor, downsampling=False)
+        self.dconv_up2 = double_conv(128//factor, 64//factor, downsampling=False)
+        self.dconv_up1 = double_conv(64//factor, 32//factor, downsampling=False)
 
-        self.conv_last = nn.Conv2d(2 * chans + 2 * num_keypoints, 3, 1)
+        self.conv_last = nn.Conv2d(32//factor, 3, 1)
+        self.num_keypoints = num_keypoints
 
     def forward(self, source, result_kps):
         x = source
 
         conv1 = self.dconv_down1(x)
-        x = self.maxpool(conv1)
+        x = conv1
 
         conv2 = self.dconv_down2(x)
-        x = self.maxpool(conv2)
+        x = conv2
+
         conv3 = self.dconv_down3(x)
-        x = self.maxpool(conv3)
+        x = conv3
+
         x = self.dconv_down4(x)
-        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+
+        #y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+        key_x = result_kps[:,:self.num_keypoints]
+        key_y = result_kps[:,self.num_keypoints:(2*self.num_keypoints)]
+        y = get_2d_gaussian(key_x, key_y, 0.1)
 
         x = torch.cat([x, y], dim=1)
+        x = self.dconv_up4(x)
         x = self.upsample(x)
 
-        # x = torch.cat([x, conv3], dim=1)
+        #y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+        #x = torch.cat([x, y], dim=1)
         x = self.dconv_up3(x)
         x = self.upsample(x)
 
-        # x = torch.cat([x, conv2], dim=1)
-        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
-        x = torch.cat([x, y], dim=1)
+        #y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+        #x = torch.cat([x, y], dim=1)
         x = self.dconv_up2(x)
         x = self.upsample(x)
-        # x = torch.cat([x, conv1], dim=1)
-        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
-        x = torch.cat([x, y], dim=1)
+
+        #y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
+        #x = torch.cat([x, y], dim=1)
+
         x = self.dconv_up1(x)
-        y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :, None, None]
-        x = torch.cat([x, y], dim=1)
+
+        #y = torch.ones_like(x[:, :result_kps.shape[1]]) * result_kps[:, :8, None, None]
+        #x = torch.cat([x, y], dim=1)
         out = self.conv_last(x)
         out = torch.tanh(out)
 
@@ -283,6 +285,7 @@ def train_keypoints(keypoint_model, reconstruct_model, dataloader, lr=1e-3, wd=5
                     best_weights_r = copy.deepcopy(reconstruct_model.state_dict())
                     no_improvements = 0
                 else:
+                    lr *= 0.1
                     no_improvements += 1
 
                 loss_epoch.append(stats['epoch'])

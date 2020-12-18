@@ -85,7 +85,7 @@ class TigDogDataset_Final(Dataset):
         self.category = category
         self.root_dir = root
 
-        print(self.root_dir + category + '/all/*.pkl')
+       	print(self.root_dir + category + '/all/*.pkl')
         self.normalize = normalize
         self.file_paths = glob.glob(self.root_dir + category + '/all/*.pkl')
         self.file_paths.sort()
