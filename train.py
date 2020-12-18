@@ -82,8 +82,7 @@ def main(_):
             for k in sample.keys():
                 if k in ['video', 'sfm_poses', 'landmarks', 'segmentations', 'bboxes']:
                     new_sample[k] = sample[k][i]
-                    if(k=='landmarks'):
-                      print(new_sample[k].shape)
+
             pkl.dump(new_sample, open(directory + str(save_counter) + '.pkl', 'wb'))
             sample_to_vid[save_counter] = i_sample
             if i_sample in samples_per_vid:
