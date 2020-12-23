@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="filippos@kokkinosgroup1.cs.ucl.ac.uk:22 (6)" remoteFilesAllowedToDisappearOnAutoupload="false">
+    <serverData>
+      <paths name="filippos@kokkinosgroup1.cs.ucl.ac.uk:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_634" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="filippos@kokkinosgroup1.cs.ucl.ac.uk:22 (4)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_634" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="filippos@kokkinosgroup1.cs.ucl.ac.uk:22 (5)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_62" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="filippos@kokkinosgroup1.cs.ucl.ac.uk:22 (6)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/filippos/unsupervised-keypoints" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>
