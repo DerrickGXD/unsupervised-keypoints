@@ -21,7 +21,7 @@ flags.DEFINE_integer('num_frames', 2, '')
 flags.DEFINE_integer('batch_size', 2, '')
 flags.DEFINE_string('tmp_dir_train', 'saved_frames_train/', 'tmp dir to extract train dataset')
 flags.DEFINE_string('tmp_dir_test', 'saved_frames_test/', 'tmp dir to extract test dataset')
-flags.DEFINE_string('model_state_dir','state_dict_model.pt', 'tmp dir to save model state')
+flags.DEFINE_string('model_state_dir','state_dict_model0.pt', 'tmp dir to save model state')
 opts = flags.FLAGS
 
 def convert_landmarks(result_outputs):
@@ -33,11 +33,11 @@ def main(_):
 
     torch.manual_seed(0)
     if opts.category in ['horse', 'tiger']:
-        dataset_train = tf_final.TigDogDataset_Final(opts.root_dir, opts.category, transforms=None, normalize=False,
+        dataset_train = tf_final.TigDogDataset_Final(opts.root_dir, opts.category, transforms=False, normalize=False,
                                                max_length=None, remove_neck_kp=False, split='train',
                                                img_size=opts.img_size, mirror=False, scale=False, crop=False)
 
-        dataset_test = tf_final.TigDogDataset_Final(opts.root_dir, opts.category, transforms=None, normalize=False,
+        dataset_test = tf_final.TigDogDataset_Final(opts.root_dir, opts.category, transforms=False, normalize=False,
                                                max_length=None, remove_neck_kp=False, split='test',
                                                img_size=opts.img_size, mirror=False, scale=False, crop=False)
 
@@ -137,68 +137,66 @@ def main(_):
 
     print('Dataloader Test:', len(dataloader_test))
 
-    keypoint_model = UNet(opts.num_kps).cuda()
-    checkpoint = torch.load(opts.model_state_dir)
-    keypoint_model.load_state_dict(checkpoint['keypoint_state_dict'])
-    n_iter_test = 0
-    n_iter_train = 0
-    #train_num = len(dataloader_train)
-    #test_num = len(dataloader_test)
-    train_num = 50
-    test_num = 50
-    X_train = torch.zeros(train_num, opts.num_kps*2)
-    y_train = torch.zeros(train_num, opts.num_kps*2)
-    X_test = torch.zeros(test_num, opts.num_kps*2)
-    y_test = torch.zeros(test_num, opts.num_kps*2)
-    regr = sklearn.linear_model.Ridge(alpha=0.0, fit_intercept=False)
-    for sample in dataloader_train:
-        input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
-        frame1 = input_img_tensor[:, 0]
-        frame2 = input_img_tensor[:, 1]
-        target = frame2
-        source = frame1
-        target_outputs = keypoint_model(target)
-        keypoints_pred = convert_landmarks(target_outputs)
-        keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:2]
-        keypoints_gt = ((keypoints_gt + 1) / 2.0) * opts.img_size
-        keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
-        X_train[n_iter_train:n_iter_train+2,:] = keypoints_pred
-        y_train[n_iter_train:n_iter_train+2,:] = keypoints_gt
-        n_iter_train += 2
-        if(n_iter_train==train_num):
-            break
-        #_ = regr.partial_fit(keypoints_pred[0].reshape(1,-1).cpu().detach().numpy(),keypoints_gt[0].cpu().detach().numpy())
-        #_ = regr.partial_fit(keypoints_pred[1].reshape(1,-1).cpu().detach().numpy(),keypoints_gt[1].cpu().detach().numpy())
-    _ = regr.fit(X_train.cpu().detach().numpy(), y_train.cpu().detach().numpy())
+    with torch.no_grad():
 
+        keypoint_model = UNet(opts.num_kps).cuda()
+        checkpoint = torch.load(opts.model_state_dir)
+        keypoint_model.load_state_dict(checkpoint['keypoint_state_dict'])
+        n_iter_test = 0
+        n_iter_train = 0
+        train_num = len(dataloader_train)*2
+        test_num = len(dataloader_test)*2
+        X_train = torch.zeros(train_num, opts.num_kps*2).cpu()
+        y_train = torch.zeros(train_num, opts.num_kps*2).cpu()
+        X_test = torch.zeros(test_num, opts.num_kps*2).cpu()
+        y_test = torch.zeros(test_num, opts.num_kps*2).cpu()
+        regr = sklearn.linear_model.Ridge(alpha=0.0, fit_intercept=False)
+        for sample in dataloader_train:
+            input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
+            frame1 = input_img_tensor[:, 0]
+            frame2 = input_img_tensor[:, 1]
+            target = frame2
+            source = frame1
+            target_outputs = keypoint_model(target).cpu()
+            keypoints_pred = convert_landmarks(target_outputs).cpu()
+            keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:2]
+            keypoints_gt = ((keypoints_gt + 1) / 2.0) * opts.img_size
+            keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
+            print(keypoints_pred, keypoints_gt)
+            X_train[n_iter_train:n_iter_train+2,:] = keypoints_pred
+            y_train[n_iter_train:n_iter_train+2,:] = keypoints_gt
+            n_iter_train += 2
 
-    for sample in dataloader_test:
-        input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
-        frame1 = input_img_tensor[:, 0]
-        frame2 = input_img_tensor[:, 1]
-        target = frame2
-        source = frame1
-        target_outputs = keypoint_model(target)
-        keypoints_pred = convert_landmarks(target_outputs)
-        keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:2]
-        keypoints_gt = ((keypoints_gt + 1) / 2.0) * opts.img_size
-        keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
-        X_test[n_iter_test:n_iter_test+2,:] = keypoints_pred
-        y_test[n_iter_test:n_iter_test+2,:] = keypoints_gt
-        n_iter_test += 2
-        if(n_iter_test==test_num):
-            break
+        _ = regr.fit(X_train.detach().numpy(), y_train.detach().numpy())
 
-    y_predict = regr.predict(X_test.cpu().detach().numpy())
-    keypoints_gt = y_test.reshape(test_num, opts.num_kps, 2).cpu().detach().numpy()
-    keypoints_regressed = y_predict.reshape(keypoints_gt.shape)
+        for sample in dataloader_test:
+            input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
+            frame1 = input_img_tensor[:, 0]
+            frame2 = input_img_tensor[:, 1]
+            target = frame2
+            source = frame1
+            target_outputs = keypoint_model(target).cpu()
+            keypoints_pred = convert_landmarks(target_outputs).cpu()
+            keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:2]
+            keypoints_gt = ((keypoints_gt + 1) / 2.0) * opts.img_size
+            keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
+            X_test[n_iter_test:n_iter_test+2,:] = keypoints_pred
+            y_test[n_iter_test:n_iter_test+2,:] = keypoints_gt
+            n_iter_test += 2
 
-    eyes = keypoints_gt[:, :2, :]
-    occular_distances = np.sqrt(np.sum((eyes[:, 0, :] - eyes[:, 1, :])**2, axis=-1))
-    distances = np.sqrt(np.sum((keypoints_gt - keypoints_regressed)**2, axis=-1))
-    occular_distances += 1e-8
-    mean_error = np.mean(distances / occular_distances[:, None])
-    print(mean_error)
+        y_predict = regr.predict(X_test.detach().numpy())
+        keypoints_gt = y_test.reshape(test_num, opts.num_kps, 2).cpu().detach().numpy()
+        keypoints_regressed = y_predict.reshape(keypoints_gt.shape)
+
+        chin = keypoints_gt[:, 3, :]
+        tailStart = keypoints_gt[:, 8, :]
+
+        chin_tail_distances = np.sqrt(np.sum((chin - tailStart)**2, axis=-1))
+        distances = np.sqrt(np.sum((keypoints_gt - keypoints_regressed)**2, axis=-1))
+        print(chin_tail_distances)
+        chin_tail_distances += 1e-8
+        mean_error = np.mean(distances / chin_tail_distances[:, None])
+        print(mean_error)
 
 if __name__ == '__main__':
         app.run(main)

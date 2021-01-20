@@ -26,9 +26,9 @@ import os.path as osp
 import os
 import pickle as pkl
 
-flags.DEFINE_integer('epochs', 20, '')
+flags.DEFINE_integer('epochs', 50, '')
 flags.DEFINE_integer('num_kps', 18, '')
-flags.DEFINE_integer('vis_every', 50, '')
+flags.DEFINE_integer('vis_every', 1000, '')
 flags.DEFINE_integer('num_frames', 2, '')
 flags.DEFINE_integer('batch_size', 2, '')
 flags.DEFINE_integer('img_size', 128, '')
@@ -145,11 +145,11 @@ def main(_):
             n_iter += 1
         avg_loss = avg_loss / len(dataloader)
         print('Epoch ', epoch, ' average loss ', avg_loss)
-    writer.close()
     torch.save({
-        'keypoint_state_dict': keypoint_model.state_dict(),
-        'reconstruct_state_dict': reconstruct_model.state_dict()
+        'keypoint_state_dict' : keypoint_model.state_dict(),
+        'reconstruct_state_dict' : reconstruct_model.state_dict()
         }, opts.model_state_dir)
+    writer.close()
 
 
 if __name__ == '__main__':
