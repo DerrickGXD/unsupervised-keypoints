@@ -12,6 +12,7 @@ import sklearn.linear_model
 import numpy as np
 
 flags.DEFINE_integer('img_size', 128, '')
+flags.DEFINE_string('std', '0.1', '')
 flags.DEFINE_string('root_dir', '/home/xindeik/data/TigDog_new_wnrsfm_new/', 'tmp dir to extract dataset')
 flags.DEFINE_string('category', 'tiger', 'tmp dir to extract dataset')
 flags.DEFINE_string('tb_log_dir', 'logs/', 'tmp dir to extract dataset')
@@ -19,9 +20,10 @@ flags.DEFINE_integer('num_kps', 18, '')
 flags.DEFINE_integer('vis_every', 50, '')
 flags.DEFINE_integer('num_frames', 2, '')
 flags.DEFINE_integer('batch_size', 2, '')
+flags.DEFINE_float('alpha', 0.01, '')
 flags.DEFINE_string('tmp_dir_train', 'saved_frames_train/', 'tmp dir to extract train dataset')
 flags.DEFINE_string('tmp_dir_test', 'saved_frames_test/', 'tmp dir to extract test dataset')
-flags.DEFINE_string('model_state_dir','state_dict_model0.pt', 'tmp dir to save model state')
+flags.DEFINE_string('model_state_dir','state_dict_model_affine_', 'tmp dir to save model state')
 opts = flags.FLAGS
 
 def convert_landmarks(result_outputs):
@@ -111,9 +113,9 @@ def main(_):
     dataset_train = tigdog_mf.TigDogDataset_MultiFrame(opts.tmp_dir_train, opts.category, num_frames=opts.num_frames,
                                                  sample_to_vid=sample_to_vid_train,
                                                  samples_per_vid=samples_per_vid_train,
-                                                 normalize=True, transforms=True,
+                                                 normalize=True, transforms=False,
                                                  remove_neck_kp=True, split='train', img_size=opts.img_size,
-                                                 mirror=True, scale=True, crop=True, v2_crop=True, tight_bboxes=True)
+                                                 mirror=False, scale=True, crop=True, v2_crop=True, tight_bboxes=True)
 
     collate_fn = tigdog_mf.TigDog_collate
 
@@ -127,9 +129,9 @@ def main(_):
     dataset_test = tigdog_mf.TigDogDataset_MultiFrame(opts.tmp_dir_test, opts.category, num_frames=opts.num_frames,
                                                  sample_to_vid=sample_to_vid_test,
                                                  samples_per_vid=samples_per_vid_test,
-                                                 normalize=True, transforms=True,
+                                                 normalize=True, transforms=False,
                                                  remove_neck_kp=True, split='test', img_size=opts.img_size,
-                                                 mirror=True, scale=True, crop=True, v2_crop=True, tight_bboxes=True)
+                                                 mirror=False, scale=True, crop=True, v2_crop=True, tight_bboxes=True)
 
 
     dataloader_test = DataLoader(dataset_test, opts.batch_size, drop_last=True, shuffle=True,
@@ -140,7 +142,7 @@ def main(_):
     with torch.no_grad():
 
         keypoint_model = UNet(opts.num_kps).cuda()
-        checkpoint = torch.load(opts.model_state_dir)
+        checkpoint = torch.load(opts.model_state_dir + str(opts.alpha) + '.pt')
         keypoint_model.load_state_dict(checkpoint['keypoint_state_dict'])
         n_iter_test = 0
         n_iter_train = 0
@@ -150,6 +152,7 @@ def main(_):
         y_train = torch.zeros(train_num, opts.num_kps*2).cpu()
         X_test = torch.zeros(test_num, opts.num_kps*2).cpu()
         y_test = torch.zeros(test_num, opts.num_kps*2).cpu()
+        test_image = torch.zeros(test_num, 3, opts.img_size, opts.img_size).cpu()
         regr = sklearn.linear_model.Ridge(alpha=0.0, fit_intercept=False)
         for sample in dataloader_train:
             input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
@@ -162,7 +165,6 @@ def main(_):
             keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:2]
             keypoints_gt = ((keypoints_gt + 1) / 2.0) * opts.img_size
             keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
-            print(keypoints_pred, keypoints_gt)
             X_train[n_iter_train:n_iter_train+2,:] = keypoints_pred
             y_train[n_iter_train:n_iter_train+2,:] = keypoints_gt
             n_iter_train += 2
@@ -182,21 +184,11 @@ def main(_):
             keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
             X_test[n_iter_test:n_iter_test+2,:] = keypoints_pred
             y_test[n_iter_test:n_iter_test+2,:] = keypoints_gt
+            test_image[n_iter_test:n_iter_test+2,:] = target
             n_iter_test += 2
 
-        y_predict = regr.predict(X_test.detach().numpy())
-        keypoints_gt = y_test.reshape(test_num, opts.num_kps, 2).cpu().detach().numpy()
-        keypoints_regressed = y_predict.reshape(keypoints_gt.shape)
-
-        chin = keypoints_gt[:, 3, :]
-        tailStart = keypoints_gt[:, 8, :]
-
-        chin_tail_distances = np.sqrt(np.sum((chin - tailStart)**2, axis=-1))
-        distances = np.sqrt(np.sum((keypoints_gt - keypoints_regressed)**2, axis=-1))
-        print(chin_tail_distances)
-        chin_tail_distances += 1e-8
-        mean_error = np.mean(distances / chin_tail_distances[:, None])
-        print(mean_error)
+        save_keypoints = 'keypoint_affine_' + str(opts.alpha)
+        np.savez(save_keypoints,X_test=X_test, X_train=X_train, y_test=y_test, y_train=y_train, test_image=test_image)
 
 if __name__ == '__main__':
         app.run(main)
