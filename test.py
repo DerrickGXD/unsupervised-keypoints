@@ -3,7 +3,7 @@ from absl import app
 from absl import flags
 from data import tigdog_final as tf_final
 from data import frame_loader as tigdog_mf
-from Models import UNet, xy_outputs
+from Models import IMM
 import pickle as pkl
 import os
 import os.path as osp
@@ -12,18 +12,18 @@ import sklearn.linear_model
 import numpy as np
 
 flags.DEFINE_integer('img_size', 128, '')
-flags.DEFINE_string('std', '0.1', '')
+flags.DEFINE_float('std', 0.25, '')
 flags.DEFINE_string('root_dir', '/home/xindeik/data/TigDog_new_wnrsfm_new/', 'tmp dir to extract dataset')
 flags.DEFINE_string('category', 'tiger', 'tmp dir to extract dataset')
 flags.DEFINE_string('tb_log_dir', 'logs/', 'tmp dir to extract dataset')
 flags.DEFINE_integer('num_kps', 18, '')
+flags.DEFINE_integer('gauss_kps',40,'')
 flags.DEFINE_integer('vis_every', 50, '')
 flags.DEFINE_integer('num_frames', 2, '')
 flags.DEFINE_integer('batch_size', 2, '')
-flags.DEFINE_float('alpha', 0.01, '')
 flags.DEFINE_string('tmp_dir_train', 'saved_frames_train/', 'tmp dir to extract train dataset')
 flags.DEFINE_string('tmp_dir_test', 'saved_frames_test/', 'tmp dir to extract test dataset')
-flags.DEFINE_string('model_state_dir','state_dict_model_affine_', 'tmp dir to save model state')
+flags.DEFINE_string('model_state_dir','state_dict_model_reconstruct_affine_0.1_kp40.pt', 'tmp dir to save model state')
 opts = flags.FLAGS
 
 def convert_landmarks(result_outputs):
@@ -141,53 +141,64 @@ def main(_):
 
     with torch.no_grad():
 
-        keypoint_model = UNet(opts.num_kps).cuda()
-        checkpoint = torch.load(opts.model_state_dir + str(opts.alpha) + '.pt')
-        keypoint_model.load_state_dict(checkpoint['keypoint_state_dict'])
+        keypoint_model = IMM(dim=opts.gauss_kps, heatmap_std=opts.std, in_channel=3, h_channel=32).cuda()
+        checkpoint = torch.load(opts.model_state_dir)
+        keypoint_model.load_state_dict(checkpoint['model_state_dict'])
         n_iter_test = 0
         n_iter_train = 0
         train_num = len(dataloader_train)*2
         test_num = len(dataloader_test)*2
-        X_train = torch.zeros(train_num, opts.num_kps*2).cpu()
-        y_train = torch.zeros(train_num, opts.num_kps*2).cpu()
-        X_test = torch.zeros(test_num, opts.num_kps*2).cpu()
-        y_test = torch.zeros(test_num, opts.num_kps*2).cpu()
+        X_train = torch.zeros(train_num, opts.gauss_kps*3).cpu()
+        y_train = torch.zeros(train_num, opts.num_kps*3).cpu()
+        X_test = torch.zeros(test_num, opts.gauss_kps*3).cpu()
+        y_test = torch.zeros(test_num, opts.num_kps*3).cpu()
         test_image = torch.zeros(test_num, 3, opts.img_size, opts.img_size).cpu()
         regr = sklearn.linear_model.Ridge(alpha=0.0, fit_intercept=False)
         for sample in dataloader_train:
             input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
+            mask_3channels = torch.unsqueeze(sample['mask'], 2)
+            mask_3channels = mask_3channels.repeat(1,1,3,1,1).clone().cuda()
+            input_img_tensor *= mask_3channels
             frame1 = input_img_tensor[:, 0]
             frame2 = input_img_tensor[:, 1]
             target = frame2
             source = frame1
-            target_outputs = keypoint_model(target).cpu()
-            keypoints_pred = convert_landmarks(target_outputs).cpu()
-            keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:2]
-            keypoints_gt = ((keypoints_gt + 1) / 2.0) * opts.img_size
+            _, keypoints_pred, _, _ = keypoint_model(source, target)
+            keypoints_pred = keypoints_pred.cpu()
+            keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:3]
+            dummy_vis = torch.ones(opts.batch_size,opts.gauss_kps,1)
+            keypoints_pred = torch.cat((keypoints_pred,dummy_vis),-1) #assume all predicted keypoints has visibility=1
+            keypoints_pred = keypoints_pred.reshape((opts.batch_size,-1))
+
             keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
             X_train[n_iter_train:n_iter_train+2,:] = keypoints_pred
             y_train[n_iter_train:n_iter_train+2,:] = keypoints_gt
             n_iter_train += 2
 
-        _ = regr.fit(X_train.detach().numpy(), y_train.detach().numpy())
 
         for sample in dataloader_test:
             input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
+            mask_3channels = torch.unsqueeze(sample['mask'], 2)
+            mask_3channels = mask_3channels.repeat(1,1,3,1,1).clone().cuda()
+            input_img_tensor *= mask_3channels
             frame1 = input_img_tensor[:, 0]
             frame2 = input_img_tensor[:, 1]
             target = frame2
             source = frame1
-            target_outputs = keypoint_model(target).cpu()
-            keypoints_pred = convert_landmarks(target_outputs).cpu()
-            keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:2]
-            keypoints_gt = ((keypoints_gt + 1) / 2.0) * opts.img_size
+            _, keypoints_pred, _, _ = keypoint_model(source, target)
+            keypoints_pred = keypoints_pred.cpu()
+            keypoints_gt = sample['kp'].type(torch.FloatTensor)[:,1,:,:3]
+            dummy_vis = torch.ones(opts.batch_size, opts.gauss_kps, 1)
+            keypoints_pred = torch.cat((keypoints_pred,dummy_vis),-1) #assume all predicted keypoints has visibility =1
+            keypoints_pred = keypoints_pred.reshape((opts.batch_size,-1))
+
             keypoints_gt = keypoints_gt.reshape((opts.batch_size,-1))
             X_test[n_iter_test:n_iter_test+2,:] = keypoints_pred
             y_test[n_iter_test:n_iter_test+2,:] = keypoints_gt
             test_image[n_iter_test:n_iter_test+2,:] = target
             n_iter_test += 2
 
-        save_keypoints = 'keypoint_affine_' + str(opts.alpha)
+        save_keypoints = 'keypoint_testing_kp40_reconstruct_affine_0.1'
         np.savez(save_keypoints,X_test=X_test, X_train=X_train, y_test=y_test, y_train=y_train, test_image=test_image)
 
 if __name__ == '__main__':

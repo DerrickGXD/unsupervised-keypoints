@@ -16,7 +16,7 @@ from absl import flags
 from TrainDataset import channels_to_frame, frame_to_channels
 from data import ytvis_final as yt_final
 from data import tigdog_final as tf_final
-from Models import UNet, UNet_Reconstruct, xy_outputs, get_2d_gaussian
+from Models import IMM
 from torch.utils.tensorboard import SummaryWriter
 import torchvision
 import utils
@@ -28,23 +28,22 @@ import pickle as pkl
 from torchvision.transforms.functional import affine, _get_inverse_affine_matrix
 
 flags.DEFINE_integer('epochs', 50, '')
-flags.DEFINE_integer('num_kps', 18, '')
-flags.DEFINE_integer('vis_every', 2000, '')
+flags.DEFINE_integer('num_kps', 30, '')
+flags.DEFINE_integer('vis_every', 500, '')
 flags.DEFINE_integer('num_frames', 2, '')
-flags.DEFINE_integer('batch_size', 2, '')
+flags.DEFINE_integer('batch_size', 10, '')
 flags.DEFINE_integer('img_size', 128, '')
-flags.DEFINE_float('std', 0.1, '')
-flags.DEFINE_float('lr', 1e-3, '')
+flags.DEFINE_float('std', 0.25, '')
+flags.DEFINE_float('lr', 1e-2, '')
 flags.DEFINE_float('wd', 0, '')
-flags.DEFINE_float('alpha', 0.01, '')
-flags.DEFINE_float('beta', 10, '')
+flags.DEFINE_float('alpha', 0.0, '')
 flags.DEFINE_string('exp_name', 'kp_tigers', 'tmp dir to extract dataset')
 flags.DEFINE_string('root_dir_yt', '/home/xindeik/data/youtube_vis/pkls/', 'tmp dir to extract dataset')
 flags.DEFINE_string('root_dir', '/home/xindeik/data/TigDog_new_wnrsfm_new/', 'tmp dir to extract dataset')
 flags.DEFINE_string('tmp_dir', 'saved_frames/', 'tmp dir to extract dataset')
 flags.DEFINE_string('category', 'tiger', 'tmp dir to extract dataset')
-flags.DEFINE_string('tb_log_dir', 'logs_affine_dlr/', 'tmp dir to extract dataset')
-flags.DEFINE_string('model_state_dir','state_dict_model_affine_dlr.pt', 'tmp dir to save model state')
+flags.DEFINE_string('tb_log_dir', 'logs_reconstruct_only_kp30/', 'tmp dir to extract dataset')
+flags.DEFINE_string('model_state_dir','state_dict_model_reconstruct_only_kp30.pt', 'tmp dir to save model state')
 opts = flags.FLAGS
 
 
@@ -130,66 +129,60 @@ def main(_):
                             collate_fn=collate_fn, num_workers=2)
     print('Dataloader:', len(dataloader))
 
-    keypoint_model = UNet(opts.num_kps).cuda()
-    reconstruct_model = UNet_Reconstruct(3, opts.num_kps).cuda()
-    loss_fn_alex = lpips.LPIPS(net='alex').cuda()
+    IMM_Model = IMM(dim=opts.num_kps, heatmap_std=opts.std, in_channel=3, h_channel=32).cuda()
+    loss_fn_vgg = lpips.LPIPS(net='vgg').cuda()
     loss_mse = torch.nn.MSELoss()
-    optimizer = optim.Adam(list(keypoint_model.parameters()) + list(reconstruct_model.parameters()), lr=opts.lr, weight_decay=opts.wd)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=2, threshold=1e-7)
-    std = opts.std
-    n_iter = 0
+    optimizer = optim.Adam(IMM_Model.parameters(), lr=opts.lr)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=0, threshold=1e-5)
+    n_iter  = 0
     n_batch = 0
-    #affine = RandomAffine(degrees=5, shear=(0.0,0.5))
     for epoch in range(opts.epochs):
         avg_loss = 0
         for sample in dataloader:
             input_img_tensor = sample['img'].type(torch.FloatTensor).clone().cuda()
             mask_3channels = torch.unsqueeze(sample['mask'], 2)
             mask_3channels = mask_3channels.repeat(1,1,3,1,1).clone().cuda()
-            frame1 = input_img_tensor[:, 0] * mask_3channels[:,0]
-            frame2 = input_img_tensor[:, 1] * mask_3channels[:,1]
+            input_img_tensor *= mask_3channels
+            frame1 = input_img_tensor[:, 0]
+            frame2 = input_img_tensor[:, 1]
             source = frame1
             target = frame2
+            target_mask = mask_3channels[:,1].cpu()
+            #mask_edt = np.stack([compute_dt(m) for m in target_mask])
+            total_loss_affine = 0
+
+            #reconstruct image, get result_kps
+            reconstruct, result_kps, gauss, pose_val = IMM_Model(source, target)
+            reconstruct_display = torch.clamp(reconstruct,0,1)
+            result_kps_vis = torch.cat([result_kps, torch.ones_like(result_kps[:,:,:1])], dim=-1)
+            #edts_barrier = torch.tensor(mask_edt).float().unsqueeze(1).cuda()
+            #loss_mask = texture_dt_loss_v(result_kps, edts_barrier)
+            loss_reconstruction = loss_fn_vgg.forward(reconstruct, target).mean()
 
             for i in range(4):
-                target_outputs = keypoint_model(target)
-                result_x, result_y = xy_outputs(target_outputs, scaling=True, scale=16)
-                result_kps = torch.cat([result_x, result_y], dim=1)
-                result_kps_vis = torch.stack([result_x, result_y, torch.ones_like(result_y)], dim=-1)
-                reconstruct = reconstruct_model(source, result_kps)
-                target_mask = sample['mask'][:,1]
-                mask_edt = np.stack([compute_dt(m) for m in target_mask])
-                result_kps_xy = torch.dstack((result_x, result_y))
-                edts_barrier = torch.tensor(mask_edt).float().unsqueeze(1).cuda()
-                loss_mask = texture_dt_loss_v(result_kps_xy, edts_barrier)
-                loss_reconstruction = loss_fn_alex.forward(reconstruct, change_range(target)).mean()
 
+                #transform target to target_affine
                 rand_angle = np.random.uniform(0,50)
                 rand_shear = np.random.uniform(0,50)
-                target_affine = affine(target, rand_angle, [0.0,0.0],1.0,[0.0,rand_shear])
-                affine_outputs = keypoint_model(target_affine)
-                affine_x, affine_y = xy_outputs(affine_outputs, scaling=True, scale=16)
-                matrix = _get_inverse_affine_matrix([0.0,0.0],rand_angle,[0.0,0.0],1.0,[0.0,rand_shear])
-                transformation_matrix = torch.tensor([[matrix[0],matrix[1],matrix[2]],[matrix[3],matrix[4],matrix[5]],[0,0,1]])
-                affine_kps_xy = torch.dstack((affine_x,affine_y))
-                true_affine_kps = torch.zeros(opts.batch_size,opts.num_kps,2)
+                target_affine = affine(target, rand_angle, [0.0,0.0],1.0,[0.0,rand_shear]) #transform image
+                matrix = _get_inverse_affine_matrix([0.0,0.0],rand_angle,[0.0,0.0],1.0,[0.0,rand_shear]) #keep track of matrix used for affine, need to transform kps
+                transformation_matrix = torch.tensor([[matrix[0],matrix[1],matrix[2]],[matrix[3],matrix[4],matrix[5]],[0,0,1]]).cuda()
+
+                #get predicted keypoints of affine image
+                _, affine_kps, _, _ = IMM_Model(source, target_affine)
+
+                #set the true affine keypoints = matrix @ predicted kps in original img
+                true_affine_kps = torch.zeros(opts.batch_size,opts.num_kps,2).cuda()
                 for batch in range(opts.batch_size):
                     for n in range(opts.num_kps):
-                        result_xyz = torch.tensor([result_kps_xy[batch,n,0], result_kps_xy[batch,n,1],1])
+                        result_xyz = torch.tensor([result_kps[batch,n,0], result_kps[batch,n,1],1]).cuda()
                         t = torch.matmul(torch.inverse(transformation_matrix),result_xyz)
                         true_affine_kps[batch,n] = t[:2]
 
                 true_affine_kps_vis = torch.stack([true_affine_kps[:,:,0], true_affine_kps[:,:,1], torch.ones_like(true_affine_kps[:,:,1])], dim=-1)
-                pred_affine_kps_vis = torch.stack([affine_x, affine_y, torch.ones_like(affine_y)], dim=-1)
-                loss_affine = loss_mse(affine_kps_xy.detach().cpu(), true_affine_kps)
-                if(epoch<20):
-                    alpha = 0
-                else:
-                    alpha = opts.alpha
-                loss = loss_reconstruction + (alpha * loss_mask) + (opts.beta * loss_affine)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                pred_affine_kps_vis = torch.stack([affine_kps[:,:,0], affine_kps[:,:,1], torch.ones_like(affine_kps[:,:,1])], dim=-1)
+                loss_affine = loss_mse(affine_kps, true_affine_kps)
+                total_loss_affine += loss_affine
 
                 if n_batch % opts.vis_every == 0:
                     kp_img = utils.kp2im(result_kps_vis[0].detach().cpu().numpy(), target[0].cpu().numpy(), radius=2) / 255
@@ -204,23 +197,35 @@ def main(_):
                     kp_mask = utils.kp2im(result_kps_vis[0].detach().cpu().numpy(), mask_3channels[0,1].cpu().numpy(), radius=2) / 255
                     kp_mask = torch.from_numpy(kp_mask).permute(2, 0, 1)[None]
                     kp_mask = kp_mask.to(source.device)
-                    grid = torch.cat([source[:1], target[:1], kp_img[:1], kp_affine[:1], kp_affine_p[:1], kp_mask, change_range(reconstruct[:1], to_01=True)], dim=3)[0]
-                    writer.add_image('iter {n} of image {i} (reconstruction, mask, affine, loss) = ({r},{m},{a},{l}) '.format(r=loss_reconstruction,m=loss_mask,a=loss_affine,l=loss,i=i,n=str(n_iter)), grid, n_iter)
-                avg_loss += loss.item()
-                writer.add_scalar('Loss : ' , loss, n_iter)
-                writer.add_scalar('Reconstruction : ', loss_reconstruction, n_iter)
-                writer.add_scalar('Mask : ', loss_mask, n_iter)
-                writer.add_scalar('Affine : ', loss_affine, n_iter)
-                n_iter += 1
+                    grid = torch.cat([source[:1], target[:1], kp_img[:1], kp_affine[:1], kp_affine_p[:1], kp_mask, reconstruct_display[:1]], dim=3)[0]
+                    writer.add_image('iter {n} of image {i} (reconstruction, affine) = ({r},{a}) '.format(r=loss_reconstruction,a=loss_affine,i=i,n=str(n_iter)), grid, n_iter)
+
             n_batch += 1
-        avg_loss = avg_loss / (len(dataloader)*4)
+            if(epoch == 20): #reset learning rate scheduler
+                optimizer.param_groups[0]['lr'] = opts.lr
+                lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=0, threshold=1e-5)
+
+            if(epoch < 20):
+                alpha = 0.0
+            else:
+                alpha = opts.alpha
+            loss = loss_reconstruction + (alpha * total_loss_affine)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            avg_loss += loss.item()
+            writer.add_scalar('Loss : ' , loss, n_iter)
+            writer.add_scalar('Reconstruction : ', loss_reconstruction, n_iter)
+            writer.add_scalar('Affine : ', total_loss_affine, n_iter)
+            n_iter += 1
+
+        avg_loss = avg_loss/len(dataloader)
         lr_scheduler.step(avg_loss)
-        print('Epoch ', epoch, ' average loss ', avg_loss)
-    torch.save({
-        'keypoint_state_dict' : keypoint_model.state_dict(),
-        'reconstruct_state_dict' : reconstruct_model.state_dict()
-        }, opts.model_state_dir + str(opts.alpha))
-    writer.close()
+        print('Epoch ', epoch, ' average loss ', avg_loss, ' learning rate ', optimizer.param_groups[0]['lr'])
+    #torch.save({
+    #    'model_state_dict' : IMM_Model.state_dict()
+    #    }, opts.model_state_dir)
+    #writer.close()
 
 
 if __name__ == '__main__':
