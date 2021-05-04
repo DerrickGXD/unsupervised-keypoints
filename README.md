@@ -3,21 +3,7 @@ Inspired by Jakab and Gupta et al. (2018) [Unsupervised Learning of Object Landm
 
 # Abstract
 Unsupervised learning of keypoints detection through image reconstruction has received a lot of
-interest due to its demand in industry and application generality across datasets. A state-ofthe-art learning method from [Unsupervised Learning of Object Landmarks through Conditional
-Image Generation](https://www.robots.ox.ac.uk/~vgg/research/unsupervised_landmarks/unsupervised_landmarks.pdf) a requires a pair of images, namely source image and target image, which differs via object deformation or viewpoint change. The model learns to detect the geometry of a
-target image, combining with the appearance of a source image detected using a similar model,
-to generate an image as close as the target image. The model has proven to work well in both
-object deformation and viewpoint change by only adopting a perceptual loss formulation, but our
-research shows that it does not guarantee to work well in raw video frames. Our empirical research shows that the model is not able to learn keypoints that precisely represent each specific
-part of object when the number of keypoints and size of objects varies. Besides, we show that
-the learning of keypoints is much ineffective when the background of object changes throughout
-the frames, which is very common in video. We propose a new method to learn keypoint detection by adding equivariance constraint in training and adopting different types of loss instead of
-only perceptual loss and adding new dimension to regressor to identify the visibility of keypoints.
-We also show that non-static background will greatly affect the efficiency of model in keypoints
-detection and image reconstruction, and the training could be improved with static background
-training images. We evaluate our model on TigDog Dataset, which contains tiger frames sourced
-from documentaries videos. We show that our method outperforms the state-of-the-art unsupervised keypoints detection via image reconstruction with video frame dataset, while preserving the
-simplicity of implementations and generality across datasets.
+interest due to its demand in industry and application generality across datasets. A state-ofthe-art learning method from [Unsupervised Learning of Object Landmarks through Conditional Image Generation](https://www.robots.ox.ac.uk/~vgg/research/unsupervised_landmarks/unsupervised_landmarks.pdf) a requires a pair of images, namely source image and target image, which differs via object deformation or viewpoint change. The model learns to detect the geometry of a target image, combining with the appearance of a source image detected using a similar model, to generate an image as close as the target image. The model has proven to work well in both object deformation and viewpoint change by only adopting a perceptual loss formulation, but our research shows that it does not guarantee to work well in raw video frames. Our empirical research shows that the model is not able to learn keypoints that precisely represent each specific part of object when the number of keypoints and size of objects varies. Besides, we show that the learning of keypoints is much ineffective when the background of object changes throughout the frames, which is very common in video. We propose a new method to learn keypoint detection by adding equivariance constraint in training and adopting different types of loss instead of only perceptual loss and adding new dimension to regressor to identify the visibility of keypoints. We also show that non-static background will greatly affect the efficiency of model in keypoints detection and image reconstruction, and the training could be improved with static background training images. We evaluate our model on TigDog Dataset, which contains tiger frames sourced from documentaries videos. We show that our method outperforms the state-of-the-art unsupervised keypoints detection via image reconstruction with video frame dataset, while preserving the simplicity of implementations and generality across datasets.
 
 # References
 1. Tomas Jakab, Ankush Gupta, Hakan Bilen, Andrea Vedaldi (2018). Unsupervised Learning of Object Landmarks through Conditional Image Generation[online]. Available from:https://www.robots.ox.ac.uk/~vgg/research/unsupervised_landmarks/unsupervised_landmarks.pdf
